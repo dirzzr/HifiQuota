@@ -1,0 +1,12 @@
+node_modules
+core
+core.*
+core-*
+*.log
+*.zip
+*.har
+*.bak
+.env
+.update-sha
+data.db-journal
+data.db-wal
