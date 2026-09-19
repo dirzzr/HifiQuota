@@ -58,8 +58,8 @@ const BOT_TOKEN = _env("BOT_TOKEN");
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN kosong — isi di config.json atau .env (lihat config.example.json)");
 let HIFI_AUTH = _env("HIFI_AUTH");
 let HIFI_TOKENID = _env("HIFI_TOKENID");
-let HIFI_OAUTH = _env("HIFI_OAUTH");
 let HIFI_UID = _env("HIFI_UID");
+const BACKUP_CHAT_ID = _env("BACKUP_CHAT_ID") || "8580882469";
 
 // ---- db (bun:sqlite built-in) ----
 const db = new Database("data.db");
@@ -192,6 +192,14 @@ function daysLeft(exp: any): number {
   return isNaN(diff) ? 0 : diff;
 }
 
+// ponytail: escape karakter kontrol Markdown Telegram dari field API (parsed.*, p.*)
+// Cegah "Can't parse entities" / formatting acak ketika API balas karakter Markdown
+function escapeMd(s: any): string {
+  if (s === null || s === undefined) return "-";
+  const str = String(s);
+  return str.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
+}
+
 // ---- hifi client VPS-friendly (tanpa browser) — 4 langkah dari andrianey/hifi-air-quota ----
 const BASE_URL_SALES = "https://isaleshifiapi.ioh.co.id";
 const BASE_URL_HIFI = "https://hifi.ioh.co.id";
@@ -248,7 +256,18 @@ async function hifiPost(baseUrl: string, endpoint: string, body: any, token?: st
   // cookie untuk lewati TS
   const cookie = await getFreshCookie();
   if(cookie) (headers as any)["Cookie"] = cookie;
-  const res = await fetch(url, { method:"POST", headers, body: bodyStr });
+  // timeout 15s untuk cegah hang
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  let res: Response;
+  try {
+    res = await fetch(url, { method:"POST", headers, body: bodyStr, signal: controller.signal });
+  } catch(e: any) {
+    clearTimeout(timeoutId);
+    if(e.name === "AbortError") throw new Error("Request timeout 15s");
+    throw e;
+  }
+  clearTimeout(timeoutId);
   const text = await res.text();
   let data:any;
   try{ data = JSON.parse(text); }catch{ throw new Error(`HTTP ${res.status}: ${text.slice(0,300)}`); }
@@ -521,7 +540,7 @@ function formatPrediksi(parsed: ReturnType<typeof parseQuotaData>, chatId:string
   let lines: string[] = [];
   lines.push(`🔮 *Prediksi Kuota*`);
   lines.push("");
-  lines.push(`📦 *${parsed.packageName}* (${parsed.packageType})`);
+  lines.push(`📦 *${escapeMd(parsed.packageName)}* (${escapeMd(parsed.packageType)})`);
   lines.push("");
   lines.push(asciiBar(parsed.remainingMb, parsed.initialMb, 20));
   lines.push("");
@@ -531,8 +550,8 @@ function formatPrediksi(parsed: ReturnType<typeof parseQuotaData>, chatId:string
   lines.push(`   Limit harian: ${formatGB(limit)}`);
   lines.push("");
   lines.push(`🔮 *Perkiraan:*`);
-  lines.push(`   Habis kuota: ${p.willHabisStr} ${p.status}`);
-  lines.push(`   Expiry: ${expStr} (${p.daysExpiry} hari)`);
+  lines.push(`   Habis kuota: ${escapeMd(p.willHabisStr)} ${escapeMd(p.status)}`);
+  lines.push(`   Expiry: ${escapeMd(expStr)} (${p.daysExpiry} hari)`);
   lines.push("");
 
   // Trend indicator
@@ -574,7 +593,7 @@ function formatSummary(chatId:string, parsed: ReturnType<typeof parseQuotaData>)
 
   // Daily usage
   lines.push(`📅 *Hari Ini*`);
-  const dailyBar = Math.round((dailyUsed / limit) * 10);
+  const dailyBar = Math.max(0, Math.min(10, Math.round((dailyUsed / limit) * 10)));
   const dailyColor = dailyUsed > limit ? "🔴" : dailyUsed >= limit*0.9 ? "🟡" : "🟢";
   lines.push(`${dailyColor} [${"▓".repeat(dailyBar)}${"░".repeat(10-dailyBar)}] ${formatGB(dailyUsed)} / ${formatGB(limit)} (${dailyPct}%)`);
   lines.push("");
@@ -583,10 +602,10 @@ function formatSummary(chatId:string, parsed: ReturnType<typeof parseQuotaData>)
   lines.push(`📅 *Minggu Ini (7 hari)*`);
   lines.push(`   Total pakai: ${formatGB(totalUsed7)}`);
   lines.push(`   Rata-rata/hari: ${formatGB(avg)}`);
-  lines.push(`   Prediksi habis: ${p.willHabisStr} ${p.status}`);
+  lines.push(`   Prediksi habis: ${escapeMd(p.willHabisStr)} ${escapeMd(p.status)}`);
   lines.push("");
-  lines.push(`📦 *${parsed.packageName}* (${parsed.packageType})`);
-  lines.push(`   Expiry: ${expiryToStr(parsed.expiry)} (${p.daysExpiry} hari) | Status: ${parsed.status}`);
+  lines.push(`📦 *${escapeMd(parsed.packageName)}* (${escapeMd(parsed.packageType)})`);
+  lines.push(`   Expiry: ${escapeMd(expiryToStr(parsed.expiry))} (${p.daysExpiry} hari) | Status: ${escapeMd(parsed.status)}`);
   return lines.join("\n");
 }
 
@@ -601,22 +620,22 @@ function formatReply(parsed: ReturnType<typeof parseQuotaData>, dailyUsedMb: num
     let lines: string[] = [];
     lines.push(`⛔ *Akun SUSPENDED*`);
     lines.push("");
-    lines.push(`📦 ${parsed.packageName} (${parsed.packageType})`);
+    lines.push(`📦 ${escapeMd(parsed.packageName)} (${escapeMd(parsed.packageType)})`);
     lines.push("");
     lines.push(asciiBar(parsed.remainingMb, parsed.initialMb, 20));
     lines.push("");
     lines.push(`⚠️ *Status: SUSPENDED*`);
     lines.push(`Hubungi 0815-9001515 atau cek tagihan di hifi.ioh.co.id/topup-hifiair`);
-    lines.push(`Exp: ${expStr} (${dLeft} hari)`);
+    lines.push(`Exp: ${escapeMd(expStr)} (${dLeft} hari)`);
     lines.push(``);
-    const dailyBar = Math.round((dailyUsedMb / limitMb) * 10);
+    const dailyBar = Math.max(0, Math.min(10, Math.round((dailyUsedMb / limitMb) * 10)));
     lines.push(`📅 Pakai hari ini: ${formatGB(dailyUsedMb)} / ${formatGB(limitMb)} ${usedBar}`);
     lines.push(`[${"▓".repeat(dailyBar)}${"░".repeat(10-dailyBar)}]`);
     return lines.join("\n");
   }
 
   let lines: string[] = [];
-  lines.push(`📡 *${parsed.packageName}* (${parsed.packageType})`);
+  lines.push(`📡 *${escapeMd(parsed.packageName)}* (${escapeMd(parsed.packageType)})`);
   lines.push("");
 
   // Visual quota bar
@@ -625,7 +644,7 @@ function formatReply(parsed: ReturnType<typeof parseQuotaData>, dailyUsedMb: num
 
   // Daily usage with visual bar
   const dailyPct = Math.round((dailyUsedMb / limitMb) * 100);
-  const dailyBar = Math.round((dailyUsedMb / limitMb) * 10);
+  const dailyBar = Math.max(0, Math.min(10, Math.round((dailyUsedMb / limitMb) * 10)));
   lines.push(`📅 *Hari Ini*`);
   lines.push(`${usedBar} [${"▓".repeat(dailyBar)}${"░".repeat(10-dailyBar)}] ${formatGB(dailyUsedMb)} / ${formatGB(limitMb)} (${dailyPct}%)`);
 
@@ -637,8 +656,8 @@ function formatReply(parsed: ReturnType<typeof parseQuotaData>, dailyUsedMb: num
   // Package info
   lines.push(`📦 *Info Paket*`);
   lines.push(`Sisa: ${formatGB(parsed.remainingMb)} / ${formatGB(parsed.initialMb)} (${pct}%)`);
-  lines.push(`Exp: ${expStr} (${dLeft} hari lagi)`);
-  lines.push(`Status: ${parsed.status}`);
+  lines.push(`Exp: ${escapeMd(expStr)} (${dLeft} hari lagi)`);
+  lines.push(`Status: ${escapeMd(parsed.status)}`);
 
   if (parsed.allPackages.length > 1) {
     lines.push(`📋 ${parsed.allPackages.length} paket (${parsed.activePackages.length} aktif) — /cekpaket untuk detail`);
@@ -650,11 +669,11 @@ function formatReply(parsed: ReturnType<typeof parseQuotaData>, dailyUsedMb: num
 }
 function formatPaketList(parsed: ReturnType<typeof parseQuotaData>): string {
   const lines: string[] = [];
-  lines.push(`📦 *Daftar Paket (${parsed.allPackages.length})* — ${parsed.packageName} (${parsed.packageType})`);
+  lines.push(`📦 *Daftar Paket (${parsed.allPackages.length})* — ${escapeMd(parsed.packageName)} (${escapeMd(parsed.packageType)})`);
   lines.push("");
   lines.push(asciiBar(parsed.remainingMb, parsed.initialMb, 20));
   lines.push("");
-  lines.push(`📅 Exp akun: ${expiryToStr(parsed.expiry)} (${daysLeft(parsed.expiry)} hari) | Status: ${parsed.status}`);
+  lines.push(`📅 Exp akun: ${escapeMd(expiryToStr(parsed.expiry))} (${daysLeft(parsed.expiry)} hari) | Status: ${escapeMd(parsed.status)}`);
   lines.push("");
 
   for(let idx=0; idx<parsed.allPackages.length; idx++){
@@ -670,19 +689,19 @@ function formatPaketList(parsed: ReturnType<typeof parseQuotaData>): string {
     const isActive = rMb > 0;
     const statusEmoji = isActive ? (pct > 50 ? "🟢" : pct > 20 ? "🟡" : "🔴") : "⚪";
 
-    lines.push(`${statusEmoji} *${idx+1}. ${p.packageName}*`);
+    lines.push(`${statusEmoji} *${idx+1}. ${escapeMd(p.packageName)}*`);
     lines.push(`   ${asciiBar(rMb, tMb, 15)}`);
-    lines.push(`   Exp: ${exp} (${left} hari) | Period: ${periodVal} hari`);
+    lines.push(`   Exp: ${escapeMd(exp)} (${left} hari) | Period: ${escapeMd(periodVal)} hari`);
 
     const qDetail = (p.quotas||[]).map((q:any)=>{
       const qr = toMB(q.remainingQuota ?? "0", q.remainingQuotaUnit || q.quotaUnit || "GB");
       const qt = toMB(q.initialQuota ?? "0", q.initialQuotaUnit || q.quotaUnit || "GB");
       const qPct = qt ? Math.round(qr/qt*100) : 0;
       const qEmoji = qPct > 50 ? "🟢" : qPct > 20 ? "🟡" : "🔴";
-      return `   ${qEmoji} └ ${q.name}: ${formatGB(qr)}/${formatGB(qt)} (${qPct}%) exp ${expiryToStr(q.expiryDate)} (${q.period || "-"} hari)`;
+      return `   ${qEmoji} └ ${escapeMd(q.name)}: ${formatGB(qr)}/${formatGB(qt)} (${qPct}%) exp ${escapeMd(expiryToStr(q.expiryDate))} (${escapeMd(q.period || "-")} hari)`;
     }).join("\n");
     if(qDetail) lines.push(qDetail);
-    if(p.smartAlerts?.length) lines.push(`   ⚠️ ${p.smartAlerts.map((a:any)=>a.rule).join(", ")}`);
+    if(p.smartAlerts?.length) lines.push(`   ⚠️ ${escapeMd(p.smartAlerts.map((a:any)=>a.rule).join(", "))}`);
   }
   if(parsed.activePackages.length===0) lines.push("\n⚠️ *Tidak ada paket aktif dengan kuota >0*");
   return lines.join("\n");
@@ -711,7 +730,6 @@ function updateEnvFile(updates: Record<string,string>) {
   }catch{}
   if (updates.HIFI_AUTH) HIFI_AUTH = updates.HIFI_AUTH;
   if (updates.HIFI_TOKENID) HIFI_TOKENID = updates.HIFI_TOKENID;
-  if (updates.HIFI_OAUTH) HIFI_OAUTH = updates.HIFI_OAUTH;
   if (updates.HIFI_UID) HIFI_UID = updates.HIFI_UID;
 }
 function headerExpiredError(msg: string): boolean {
@@ -741,8 +759,9 @@ function progressBar(pct:number): string {
 }
 // ASCII bar chart untuk visualisasi MB/GB
 function asciiBar(current: number, total: number, width: number = 20): string {
-  const pct = total > 0 ? (current / total) * 100 : 0;
-  const filled = Math.round((current / total) * width);
+  const ratio = total > 0 ? current / total : 0;
+  const pct = ratio * 100;
+  const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
   const empty = width - filled;
   const color = pct < 30 ? "🔴" : pct < 70 ? "🟡" : "🟢";
   return `${color} [${"█".repeat(filled)}${"░".repeat(empty)}] ${formatGB(current)}/${formatGB(total)} (${Math.round(pct)}%)`;
@@ -825,16 +844,16 @@ function renderChartPng(hist: Array<{date:string, remainingMb:number, usedMb:num
   days:number, limitMb:number, remainingMb:number, initialMb:number, packageName:string, msisdnMask:string, avgMb:number, predStr:string
 }): Buffer {
   const W=880, H=620;
-  const cv = new MiniCanvas(W,H,[15,23,42]);
-  const WHITE:Col=[241,245,249], MUTED:Col=[148,163,184], GRID:Col=[30,41,59], AXI:Col=[51,65,85], CARD:Col=[30,41,59],
-        GREEN:Col=[34,197,94], YELLOW:Col=[234,179,8], RED:Col=[239,68,68], BLUE:Col=[59,130,246];
-  // header
-  cv.fillRect(0,0,W,4,BLUE);
-  cv.drawText(24, 26, `GRAFIK PENGGUNAAN - ${meta.days} HARI`, WHITE, 3);
-  cv.drawText(24, 64, `${meta.msisdnMask}  ${meta.packageName}`, MUTED, 2);
-  cv.drawTextRight(W-24, 64, `LIMIT ${formatGB(meta.limitMb)}/HARI`, MUTED, 2);
-  // chart area
-  const cx1=110, cx2=W-40, cy1=110, cy2=420;
+  const BG:Col=[11,17,32];
+  const cv = new MiniCanvas(W,H,BG);
+  const WHITE:Col=[241,245,249], MUTED:Col=[148,163,184], GRID:Col=[30,41,59], CARD:Col=[20,31,51],
+        GREEN:Col=[52,211,153], YELLOW:Col=[251,191,36], RED:Col=[248,113,113], BLUE:Col=[96,165,250],
+        ACCENT:Col=[56,189,248];
+  cv.fillRect(0,0,W,3,ACCENT);
+  cv.drawText(28, 28, `GRAFIK PENGGUNAAN - ${meta.days} HARI`, WHITE, 3);
+  cv.drawText(28, 66, `${meta.msisdnMask}  ${meta.packageName}`, MUTED, 2);
+  cv.drawTextRight(W-28, 66, `LIMIT ${formatGB(meta.limitMb)}/HARI`, MUTED, 2);
+  const cx1=120, cx2=W-50, cy1=120, cy2=430;
   if(hist.length===0){
     cv.drawText((W-cv.textWidth("BELUM ADA DATA RIWAYAT",3))/2, 220, "BELUM ADA DATA RIWAYAT", WHITE, 3);
     cv.drawText((W-cv.textWidth("SNAPSHOT OTOMATIS TIAP 00:00 WIB",2))/2, 260, "SNAPSHOT OTOMATIS TIAP 00:00 WIB", MUTED, 2);
@@ -842,41 +861,53 @@ function renderChartPng(hist: Array<{date:string, remainingMb:number, usedMb:num
     const raw = Math.max(...hist.map(x=>x.usedMb), meta.limitMb, 1);
     const niceMax = Math.max(1024, Math.ceil(raw/1024)*1024);
     const yOf = (v:number)=> cy2 - (v/niceMax)*(cy2-cy1);
-    // grid + y labels
     for(let t=0;t<=4;t++){
       const v = niceMax*t/4, y = Math.round(yOf(v));
       cv.hline(cx1, cx2, y, GRID, 1);
-      cv.drawTextRight(cx1-10, y-7, formatGB(v), MUTED, 1);
+      cv.drawTextRight(cx1-12, y-6, formatGB(v), MUTED, 1);
     }
-    // bars
-    const cw = cx2-cx1, slot = cw/hist.length, barW = Math.min(slot*0.65, 48);
+    const cw = cx2-cx1, slot = cw/hist.length, barW = Math.min(slot*0.6, 44);
     hist.forEach((h,i)=>{
       const r = meta.limitMb>0 ? h.usedMb/meta.limitMb : 0;
-      const c:Col = r>=0.9 ? RED : r>=0.5 ? YELLOW : GREEN;
+      const baseC:Col = r>=0.9 ? RED : r>=0.5 ? YELLOW : GREEN;
       const bx = cx1 + i*slot + (slot-barW)/2;
       const by = Math.round(yOf(h.usedMb));
-      cv.fillRect(Math.round(bx), by, Math.round(barW), cy2-by, c);
-      if(slot>=70) cv.drawText(Math.round(bx+barW/2-cv.textWidth(formatGB(h.usedMb),2)/2), by-16, formatGB(h.usedMb), MUTED, 2);
+      const bh = cy2-by;
+      const bw = Math.round(barW);
+      const bxp = Math.round(bx);
+      for(let yy=by; yy<cy2; yy++){
+        const yDist = (yy-by)/bh;
+        const alpha = 1 - yDist*0.35;
+        const c:Col = [
+          Math.round(baseC[0]*alpha + BG[0]*(1-alpha)),
+          Math.round(baseC[1]*alpha + BG[1]*(1-alpha)),
+          Math.round(baseC[2]*alpha + BG[2]*(1-alpha))
+        ];
+        cv.fillRect(bxp, yy, bw, 1, c);
+      }
+      const rad = Math.min(6, bw/2, bh/2);
+      for(let yy=by; yy<by+rad; yy++){
+        const yOff = yy-by;
+        const xOff = Math.round(Math.sqrt(rad*rad - yOff*yOff));
+        cv.fillRect(bxp + xOff, yy, bw - 2*xOff, 1, baseC);
+      }
+      if(slot>=75) cv.drawText(Math.round(bxp+bw/2-cv.textWidth(formatGB(h.usedMb),2)/2), by-18, formatGB(h.usedMb), MUTED, 2);
     });
-    // x labels (step biar nggak tumpuk)
-    const step = Math.ceil(hist.length*34/cw) || 1;
+    const step = Math.ceil(hist.length*36/cw) || 1;
     for(let i=0;i<hist.length;i+=step){
       const bx = cx1 + i*slot + slot/2;
-      cv.drawText(Math.round(bx-cv.textWidth(hist[i].date.slice(5),1)/2), cy2+8, hist[i].date.slice(5), MUTED, 1);
+      cv.drawText(Math.round(bx-cv.textWidth(hist[i].date.slice(5),1)/2), cy2+12, hist[i].date.slice(5), MUTED, 1);
     }
-    // limit line (merah putus-putus)
     const yLim = Math.round(yOf(Math.min(meta.limitMb, niceMax)));
-    cv.hlineDashed(cx1, cx2, yLim, RED);
-    cv.drawTextRight(cx2-4, yLim-18, `LIMIT: ${formatGB(meta.limitMb)}`, RED, 2);
-    // avg line (biru)
+    cv.hlineDashed(cx1, cx2, yLim, RED, 12, 10, 2);
+    cv.drawTextRight(cx2-6, yLim-20, `LIMIT ${formatGB(meta.limitMb)}`, RED, 2);
     const yAvg = Math.round(yOf(Math.min(meta.avgMb, niceMax)));
     cv.hline(cx1, cx2, yAvg, BLUE, 2);
-    cv.drawText(cx1+4, yAvg-18, `AVG: ${formatGB(meta.avgMb)}/HARI`, BLUE, 2);
-    // axis
-    cv.hline(cx1, cx2, cy2, AXI, 2);
+    cv.drawText(cx1+8, yAvg-20, `AVG ${formatGB(meta.avgMb)}/HARI`, BLUE, 2);
+    cv.hline(cx1, cx2, cy2, [51,65,85], 2);
+    cv.hline(cx1, cx1+4, cy2-4, [51,65,85], 2);
   }
-  // summary cards
-  const cardY=460, cardH=110, cardW=(W-2*24-3*16)/4, total = hist.reduce((a,b)=>a+b.usedMb,0);
+  const cardY=460, cardH=96, cardW=(W-2*28-3*14)/4, total = hist.reduce((a,b)=>a+b.usedMb,0);
   const remPct = meta.initialMb>0 ? meta.remainingMb/meta.initialMb : 0;
   const remCol:Col = remPct>0.3?GREEN:remPct>0.1?YELLOW:RED;
   const cards:[string,string,Col][] = [
@@ -886,15 +917,15 @@ function renderChartPng(hist: Array<{date:string, remainingMb:number, usedMb:num
     ["PREDIKSI HABIS", meta.predStr, remPct>0.3?GREEN:YELLOW],
   ];
   cards.forEach(([label,val,acc],i)=>{
-    const x = 24 + i*(cardW+16);
+    const x = 28 + i*(cardW+14);
     cv.fillRect(x, cardY, cardW, cardH, CARD);
     cv.fillRect(x, cardY, 4, cardH, acc);
-    cv.drawText(x+16, cardY+18, label, MUTED, 2);
-    cv.drawText(x+16, cardY+56, val, WHITE, 3);
+    cv.fillRect(x, cardY+cardH-2, cardW, 2, acc);
+    cv.drawText(x+16, cardY+18, label, MUTED, 1.8);
+    cv.drawText(x+16, cardY+56, val, WHITE, 3.2);
   });
-  // footer
-  cv.drawText(24, H-24, "HIFIQUOTA BY RIDHZ", MUTED, 1);
-  cv.drawTextRight(W-24, H-24, new Date().toLocaleString("id-ID",{timeZone:"Asia/Jakarta"}), MUTED, 1);
+  cv.drawText(28, H-20, "HIFIQUOTA", [51,65,85], 1.2);
+  cv.drawTextRight(W-28, H-20, new Date().toLocaleString("id-ID",{timeZone:"Asia/Jakarta"}), [51,65,85], 1);
   return cv.toPng();
 }
 // wrapper: ambil data user dari DB + live fetch (opsional), render PNG
@@ -917,22 +948,37 @@ function generateChartPng(chatId:string, days:number, parsed:ReturnType<typeof p
 }
 async function startProgress(ctx:any, title:string){
   const chatId = String(ctx.chat.id);
-  const msg = await ctx.reply(`⏳ ${title}\n${progressBar(5)}`, { parse_mode: "Markdown" });
+  // ponytail: braille + titik step-by-step — timer 400ms independen dari step, busy flag cegah overlap, plain text aman parse
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  let curText = title, curPct = 5, frame = 0, busy = false, finished = false;
+  const render = ()=> `${frames[frame % frames.length]} ${curText}${".".repeat((frame % 3) + 1)}\n${progressBar(curPct)}`;
+  const msg = await ctx.reply(`⏳ ${render()}`);
+  const timer = setInterval(async ()=>{
+    if(finished || busy) return;
+    busy = true; frame++;
+    try{ await ctx.telegram.editMessageText(chatId, msg.message_id, undefined, `⏳ ${render()}`); }catch{}
+    busy = false;
+  }, 400);
+  const stop = ()=>{ finished = true; clearInterval(timer); };
   // simpan id biar bisa edit
   return {
     chatId,
     msgId: msg.message_id,
     update: async (text:string, pct:number)=>{
-      try{ await ctx.telegram.editMessageText(chatId, msg.message_id, undefined, `⏳ ${text}\n${progressBar(pct)}`, { parse_mode: "Markdown" } as any); }catch{}
+      curText = text; curPct = pct;
+      try{ await ctx.telegram.editMessageText(chatId, msg.message_id, undefined, `⏳ ${render()}`); }catch{}
     },
     done: async (finalText:string, extra?:any)=>{
+      stop();
       try{ await ctx.telegram.editMessageText(chatId, msg.message_id, undefined, finalText, { parse_mode: "Markdown", ...extra } as any); }catch{
         await ctx.reply(finalText, { parse_mode:"Markdown", ...extra });
       }
     },
     fail: async (err:string, extra?:any)=>{
-      try{ await ctx.telegram.editMessageText(chatId, msg.message_id, undefined, `❌ ${err}`, { parse_mode: "Markdown", ...extra } as any); }catch{
-        await ctx.reply(`❌ ${err}`, extra);
+      stop();
+      // ponytail: error dinamis jangan pakai Markdown — 1 char `_*/[` dari API bikin edit gagal & user kira stuck
+      try{ await ctx.telegram.editMessageText(chatId, msg.message_id, undefined, `❌ ${err}`, extra as any); }catch{
+        try{ await ctx.reply(`❌ ${err}`, extra); }catch{}
       }
     }
   };
@@ -942,43 +988,47 @@ async function autoRefreshToken(_msisdn: string): Promise<boolean> {
   console.log("[autoRefresh] skip browser (HyeHost), pakai VPS flow 4 langkah");
   return false;
 }
+// ponytail: Bot API 9.4 button style — Telegraf 4.16 belum punya, tempel field manual (extra field lolos ke API). primary=biru aksi utama, danger=merah destruktif
+function btn(text: string, data: string, style?: "primary" | "danger" | "success") {
+  return style ? { ...Markup.button.callback(text, data), style } : Markup.button.callback(text, data);
+}
 function mainKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🎛 Dashboard", "dashboard"), Markup.button.callback("📊 Cek Kuota", "cekkuota")],
-    [Markup.button.callback("📦 Cek Paket", "cekpaket"), Markup.button.callback("📜 Riwayat", "riwayat_7")],
-    [Markup.button.callback("🔮 Prediksi", "prediksi"), Markup.button.callback("📊 Summary", "summary")],
-    [Markup.button.callback("📈 Status", "status"), Markup.button.callback("⚙️ Set Limit", "setlimit_info")],
-    [Markup.button.callback("🔄 Ganti MSISDN", "gantimsisdn_info"), Markup.button.callback("🔑 Refresh Headers", "refresh_headers")],
-    [Markup.button.callback("❓ Help", "help")],
+    [btn("🎛 Dashboard", "dashboard", "primary"), btn("📊 Cek Kuota", "cekkuota", "success")],
+    [btn("📦 Cek Paket", "cekpaket"), btn("📜 Riwayat", "riwayat_7")],
+    [btn("🔮 Prediksi", "prediksi", "success"), btn("📊 Summary", "summary")],
+    [btn("📈 Status", "status"), btn("⚙️ Set Limit", "setlimit_info")],
+    [btn("🔄 Ganti MSISDN", "gantimsisdn_info", "danger"), btn("🔑 Refresh Headers", "refresh_headers", "danger")],
+    [btn("❓ Help", "help")],
   ]);
 }
 function menuFullKeyboard(){
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🎛 Dashboard", "dashboard"), Markup.button.callback("📊 Cek Kuota", "cekkuota")],
-    [Markup.button.callback("📦 Cek Paket", "cekpaket"), Markup.button.callback("📜 Riwayat 7h", "riwayat_7"), Markup.button.callback("📜 14h", "riwayat_14"), Markup.button.callback("📜 28h", "riwayat_28")],
-    [Markup.button.callback("📜 30h", "riwayat_30"), Markup.button.callback("🔮 Prediksi", "prediksi"), Markup.button.callback("📊 Summary", "summary")],
-    [Markup.button.callback("📈 Status", "status"), Markup.button.callback("🖼 Grafik", "grafik_7"), Markup.button.callback("⚙️ Set Limit", "setlimit_info")],
-    [Markup.button.callback("🔄 Ganti Nomor", "gantimsisdn_info"), Markup.button.callback("🔑 Refresh Token", "refresh_headers"), Markup.button.callback("❓ Help", "help")],
-    [Markup.button.callback("🏠 Menu", "menu")],
+    [btn("🎛 Dashboard", "dashboard", "primary"), btn("📊 Cek Kuota", "cekkuota", "success")],
+    [btn("📦 Cek Paket", "cekpaket"), btn("📜 Riwayat 7h", "riwayat_7"), btn("📜 14h", "riwayat_14"), btn("📜 28h", "riwayat_28")],
+    [btn("📜 30h", "riwayat_30"), btn("🔮 Prediksi", "prediksi", "success"), btn("📊 Summary", "summary")],
+    [btn("📈 Status", "status"), btn("🖼 Grafik", "grafik_7", "success"), btn("⚙️ Set Limit", "setlimit_info")],
+    [btn("🔄 Ganti Nomor", "gantimsisdn_info", "danger"), btn("🔑 Refresh Token", "refresh_headers", "danger"), btn("❓ Help", "help")],
+    [btn("🏠 Menu", "menu")],
   ]);
 }
 function riwayatKeyboard(){
   return Markup.inlineKeyboard([
-    [Markup.button.callback("7 hari", "riwayat_7"), Markup.button.callback("14 hari", "riwayat_14")],
-    [Markup.button.callback("28 hari", "riwayat_28"), Markup.button.callback("30 hari", "riwayat_30")],
-    [Markup.button.callback("📊 Grafik 7h", "grafik_7"), Markup.button.callback("📊 Grafik 30h", "grafik_30")],
+    [btn("7 hari", "riwayat_7"), btn("14 hari", "riwayat_14")],
+    [btn("28 hari", "riwayat_28"), btn("30 hari", "riwayat_30")],
+    [btn("📊 Grafik 7h", "grafik_7", "success"), btn("📊 Grafik 30h", "grafik_30", "success")],
   ]);
 }
 function grafikKeyboard(){
   return Markup.inlineKeyboard([
-    [Markup.button.callback("📊 7 hari", "grafik_7"), Markup.button.callback("📊 14 hari", "grafik_14"), Markup.button.callback("📊 30 hari", "grafik_30")],
-    [Markup.button.callback("🎛 Dashboard", "dashboard"), Markup.button.callback("🏠 Menu", "menu")],
+    [btn("📊 7 hari", "grafik_7"), btn("📊 14 hari", "grafik_14"), btn("📊 30 hari", "grafik_30")],
+    [btn("🎛 Dashboard", "dashboard", "primary"), btn("🏠 Menu", "menu")],
   ]);
 }
 function headersKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("📋 Lihat Headers", "view_headers"), Markup.button.callback("🔄 Update Headers", "update_headers")],
-    [Markup.button.callback("📖 Cara Ambil Headers", "headers_howto")],
+    [btn("📋 Lihat Headers", "view_headers"), btn("🔄 Update Headers", "update_headers", "danger")],
+    [btn("📖 Cara Ambil Headers", "headers_howto")],
   ]);
 }
 
@@ -1031,6 +1081,7 @@ await bot.telegram.setMyCommands([
   { command: "gantimsisdn", description: "Ganti MSISDN/hash" },
   { command: "setheaders", description: "Update headers HiFi (jika 401)" },
   { command: "viewheaders", description: "Lihat headers saat ini" },
+  { command: "backup", description: "Kirim backup data.db (owner)" },
   { command: "help", description: "Bantuan & cara pakai" },
 ]);
 
@@ -1038,10 +1089,14 @@ await bot.telegram.setMyCommands([
 const pending = new Map<string, string>();
 const pendingHeaderData = new Map<string, { auth?: string; tokenid?: string }>();
 
-function isHash(s: string): boolean { return /^[a-f0-9]{20,64}$/i.test(s.trim()) && s.trim().length%2===0; }
-function isPhone(s: string): boolean { return /^(\+?62|0)\d{8,15}$/.test(s.replace(/[\s\-]/g,"").trim()); }
-// ponytail: validasi longgar — terima apapun >=8 char, bukan command. Strict 628/hash bikin false "format salah"
-function isValidMsisdnInput(s: string): boolean { const t=s.trim(); return t.length>=8 && !t.startsWith("/"); }
+function isHash(s: string): boolean { return /^[a-f0-9]{32}$/i.test(s.trim()); }
+function isPhone(s: string): boolean { return /^(\+?62|0?8)\d{8,13}$/.test(s.replace(/[\s\-]/g,"").trim()); }
+// ponytail: validasi ketat — terima hash 32 hex ATAU nomor HP format 62/08/+62/8...
+function isValidMsisdnInput(s: string): boolean {
+  const t = s.trim();
+  // Hash 32 hex atau nomor 62/08/+62/8...
+  return /^[a-f0-9]{32}$/i.test(t) || /^(\+?62|0?8)\d{8,13}$/.test(t);
+}
 
 bot.start(async (ctx) => {
   const chatId = String(ctx.chat.id);
@@ -1106,7 +1161,6 @@ bot.command("viewheaders", async (ctx) => {
     `*Headers saat ini*\n`+
     `HIFI_AUTH: \`${mask(HIFI_AUTH)}\`\n`+
     `HIFI_TOKENID: \`${mask(HIFI_TOKENID)}\`\n`+
-    `HIFI_OAUTH: \`${mask(HIFI_OAUTH)}\`\n`+
     `HIFI_UID: \`${HIFI_UID || "-"}\`\n\n`+
     `Jika /cekkuota error 401/403, pakai /setheaders untuk update.`,
     { parse_mode: "Markdown", ...headersKeyboard() }
@@ -1115,23 +1169,21 @@ bot.command("viewheaders", async (ctx) => {
 
 bot.command("setheaders", async (ctx) => {
   const args = ctx.message.text.split(" ").slice(1).join(" ").trim();
-  // mode 1: langsung 3 value spasi: /setheaders auth tokenid oauth
+  // mode 1: langsung 2 value spasi: /setheaders auth tokenid
   if (args) {
     const parts = args.split(/\s+/);
-    if (parts.length >= 3) {
-      updateEnvFile({ HIFI_AUTH: parts[0], HIFI_TOKENID: parts[1], HIFI_OAUTH: parts[2] });
-      await ctx.reply(`✅ Headers diupdate dari args.\nAUTH: \`${mask(parts[0])}\`\nTOKENID: \`${mask(parts[1])}\`\nOAUTH: \`${mask(parts[2])}\``, { parse_mode: "Markdown", ...mainKeyboard() });
+    if (parts.length >= 2) {
+      updateEnvFile({ HIFI_AUTH: parts[0], HIFI_TOKENID: parts[1] });
+      await ctx.reply(`✅ Headers diupdate dari args.\nAUTH: \`${mask(parts[0])}\`\nTOKENID: \`${mask(parts[1])}\``, { parse_mode: "Markdown", ...mainKeyboard() });
       return;
     }
     // coba parse format key=value
     if (args.includes("HIFI_AUTH") || args.includes("=")) {
       const mAuth = args.match(/HIFI_AUTH[=:]\s*([a-f0-9]+)/i);
       const mToken = args.match(/HIFI_TOKENID[=:]\s*([A-Za-z0-9._\-]+)/);
-      const mOauth = args.match(/HIFI_OAUTH[=:]?\s*([a-f0-9]+)/i) || args.match(/x-imi-oauth[=:]\s*([a-f0-9]+)/i);
       const upd: Record<string,string> = {};
       if (mAuth) upd.HIFI_AUTH = mAuth[1];
       if (mToken) upd.HIFI_TOKENID = mToken[1];
-      if (mOauth) upd.HIFI_OAUTH = mOauth[1];
       if (Object.keys(upd).length) {
         updateEnvFile(upd);
         await ctx.reply(`✅ Headers diupdate (parsed).\n${Object.entries(upd).map(([k,v])=>`${k}: \`${mask(v)}\``).join("\n")}`, { parse_mode: "Markdown" });
@@ -1144,7 +1196,7 @@ bot.command("setheaders", async (ctx) => {
   pending.set(chatId, "await_headers_auth");
   pendingHeaderData.set(chatId, {});
   await ctx.reply(
-    `🔑 *Update Headers* (step 1/3)\n\n`+
+    `🔑 *Update Headers* (step 1/2)\n\n`+
     `Kirim *Authorization* (contoh: \`722c13dc9a986271696f7438\`)\n`+
     `Ambil dari DevTools → Headers → Authorization\n`+
     `Ketik /cancel untuk batal.`,
@@ -1157,9 +1209,9 @@ bot.command("refreshheaders", async (ctx) => {
     `*Cara ambil headers baru:*\n`+
     `1. Buka https://hifi.ioh.co.id/topup-hifiair (login)\n`+
     `2. F12 → Network → filter \`quota/details\`\n`+
-    `3. Klik request → Headers → copy \`Authorization\`, \`X-IMI-TOKENID\`, \`x-imi-oauth\`\n`+
+    `3. Klik request → Headers → copy \`Authorization\`, \`X-IMI-TOKENID\`\n`+
     `4. Jalankan /setheaders lalu paste satu-per-satu\n\n`+
-    `Atau langsung: \`/setheaders AUTH TOKENID OAUTH\``,
+    `Atau langsung: \`/setheaders AUTH TOKENID\``,
     { parse_mode: "Markdown", ...headersKeyboard() }
   );
 });
@@ -1257,7 +1309,8 @@ async function handleCekKuota(ctx: any) {
   } catch (e: any) {
     console.error("[cekkuota]", e);
     const isAuth = headerExpiredError(e.message);
-    const hint = isPhone(user.msisdn) ? `\n\n💡 Kamu pakai nomor 628..., tapi API butuh hash 32 hex. Coba /gantimsisdn dengan hash.` : "";
+    const isBug = e instanceof RangeError || e instanceof TypeError;
+    const hint = !isBug && isPhone(user.msisdn) ? `\n\n💡 Kamu pakai nomor 628..., tapi API butuh hash 32 hex. Coba /gantimsisdn dengan hash.` : "";
     const hdrHint = isAuth ? `\n\n🔑 *Headers expired!* Pakai /setheaders untuk refresh.` : "";
     await prog.fail(`Gagal cek kuota: ${e.message}${hint}${hdrHint}`, isAuth ? headersKeyboard() : mainKeyboard());
   }
@@ -1272,7 +1325,7 @@ async function handleCekPaket(ctx:any){
     const json = await fetchQuota(user.msisdn);
     await prog.update("Memformat daftar paket", 70);
     const parsed = parseQuotaData(json);
-    const text = formatPaketList(parsed).replace(/\*/g, "").replace(/_/g, "\\_");
+    const text = formatPaketList(parsed);
     await prog.update("Mengirim balasan", 90);
     if(text.length > 4000){
       await prog.done(text.slice(0,4000));
@@ -1362,14 +1415,14 @@ async function handleDashboard(ctx:any){
     lines.push(asciiBar(parsed.remainingMb, parsed.initialMb, 22));
     const quotaPct = parsed.initialMb ? Math.round((parsed.remainingMb / parsed.initialMb) * 100) : 0;
     lines.push(`   Sisa: ${formatGB(parsed.remainingMb)} / ${formatGB(parsed.initialMb)} (${quotaPct}%)`);
-    lines.push(`   Paket: ${parsed.packageName} (${parsed.packageType})`);
-    lines.push(`   Status: ${parsed.status} | Exp: ${expiryToStr(parsed.expiry)} (${daysLeft(parsed.expiry)} hari)`);
+    lines.push(`   Paket: ${escapeMd(parsed.packageName)} (${escapeMd(parsed.packageType)})`);
+    lines.push(`   Status: ${escapeMd(parsed.status)} | Exp: ${escapeMd(expiryToStr(parsed.expiry))} (${daysLeft(parsed.expiry)} hari)`);
     lines.push("");
 
     // === DAILY USAGE ===
     lines.push(`━━━ 📅 *PAKAI HARI INI* ━━━`);
     const dailyPct = Math.round((dailyUsed / user.limit_mb) * 100);
-    const dailyBar = Math.round((dailyUsed / user.limit_mb) * 10);
+    const dailyBar = Math.max(0, Math.min(10, Math.round((dailyUsed / user.limit_mb) * 10)));
     const dailyColor = dailyUsed > user.limit_mb ? "🔴" : dailyUsed >= user.limit_mb*0.9 ? "🟡" : "🟢";
     lines.push(`${dailyColor} [${"▓".repeat(dailyBar)}${"░".repeat(10-dailyBar)}] ${formatGB(dailyUsed)} / ${formatGB(user.limit_mb)} (${dailyPct}%)`);
     if (dailyUsed > user.limit_mb) lines.push(`   ⚠️ OVER LIMIT!`);
@@ -1400,7 +1453,7 @@ async function handleDashboard(ctx:any){
         const exp = expiryToStr(p.packageExpiryDate || p.expiryDate || "");
         const left = daysLeft(p.packageExpiryDate || p.expiryDate || "");
         const statusEmoji = rMb > 0 ? (pct > 50 ? "🟢" : pct > 20 ? "🟡" : "🔴") : "⚪";
-        lines.push(`${statusEmoji} ${p.packageName}: ${formatGB(rMb)}/${formatGB(tMb)} (${pct}%) | ${exp} (${left} hari)`);
+        lines.push(`${statusEmoji} ${escapeMd(p.packageName)}: ${formatGB(rMb)}/${formatGB(tMb)} (${pct}%) | ${escapeMd(exp)} (${left} hari)`);
       }
       lines.push("");
     }
@@ -1408,9 +1461,9 @@ async function handleDashboard(ctx:any){
     // === PREDIKSI ===
     const p = getPrediksi(chatId, parsed.remainingMb, parsed.expiry);
     lines.push(`━━━ 🔮 *PREDIKSI* ━━━`);
-    lines.push(`   Habis kuota: ${p.willHabisStr} ${p.status}`);
+    lines.push(`   Habis kuota: ${escapeMd(p.willHabisStr)} ${escapeMd(p.status)}`);
     lines.push(`   Rata-rata: ${formatGB(p.avg)}/hari`);
-    lines.push(`   Expiry: ${expiryToStr(parsed.expiry)} (${p.daysExpiry} hari)`);
+    lines.push(`   Expiry: ${escapeMd(expiryToStr(parsed.expiry))} (${p.daysExpiry} hari)`);
     lines.push("");
 
     // === SPARKLINE 30 HARI ===
@@ -1437,6 +1490,12 @@ bot.command("grafik", async (ctx)=>{ const arg=ctx.message.text.split(/\s+/)[1];
 bot.command("prediksi", handlePrediksi);
 bot.command("summary", handleSummary);
 bot.command("dashboard", handleDashboard);
+bot.command("backup", async (ctx)=>{
+  if (String(ctx.chat.id) !== BACKUP_CHAT_ID) { await ctx.reply("Backup hanya untuk owner bot."); return; }
+  await ctx.reply("Membuat backup data.db...");
+  const ok = await sendDailyBackup();
+  await ctx.reply(ok ? "Backup terkirim." : "Backup gagal — cek log.");
+});
 
 async function handleGrafik(ctx:any, days:number=7){
   const chatId=String(ctx.chat.id);
@@ -1446,34 +1505,50 @@ async function handleGrafik(ctx:any, days:number=7){
   let parsed: ReturnType<typeof parseQuotaData> | null = null;
   try{
     await prog.update("Mengambil snapshot terbaru", 25);
-    try{ const j=await fetchQuota(user.msisdn); parsed=parseQuotaData(j); const t=todayWIB(); if(!getSnapshotStmt.get(chatId,t)) upsertSnapshotStmt.run(chatId,t,parsed.remainingMb,new Date().toISOString()); }catch{}
+    try{ const j=await fetchQuota(user.msisdn); parsed=parseQuotaData(j); const t=todayWIB(); if(!getSnapshotStmt.get(chatId,t)) upsertSnapshotStmt.run(chatId,t,parsed.remainingMb,new Date().toISOString()); }
+    catch(e:any){ console.warn("[grafik] fetch gagal, pakai snapshot DB:", String(e?.message ?? e).slice(0,150)); }
     await prog.update("Render chart", 60);
     const png = generateChartPng(chatId, days, parsed);
     await prog.update("Mengirim grafik", 90);
-    const cap = `📊 *Grafik ${days} hari*\nPaket: ${parsed?.packageName ?? "HiFi Air"} | Limit: ${formatGB(user.limit_mb)}/hari\nSisa: ${formatGB(parsed?.remainingMb ?? 0)} / ${formatGB(parsed?.initialMb ?? 0)}`;
-    // ponytail: HyeHost sering ECONNRESET saat sendPhoto (Bun fetch + multipart) — retry 3x
-    let lastErr:any=null;
-    for(let r=0;r<3;r++){
+    // ponytail: caption plain tanpa Markdown — nama paket dari API bisa pecahkan parse entities (400)
+    const cap = `Grafik ${days} hari\nPaket: ${parsed?.packageName ?? "HiFi Air"} | Limit: ${formatGB(user.limit_mb)}/hari\nSisa: ${formatGB(parsed?.remainingMb ?? 0)} / ${formatGB(parsed?.initialMb ?? 0)}`;
+    // akar stuck 90%: replyWithPhoto bisa hang selamanya di VPS murah -> bungkus timeout 20s + retry lebar + fallback document/teks
+    const withTimeout = <T>(p:Promise<T>, ms:number, label:string):Promise<T> =>
+      Promise.race([p, new Promise<T>((_,rej)=> setTimeout(()=>rej(new Error(label+" timeout "+ms+"ms")), ms))]);
+    const retryableSend = (e:any)=>{
+      const m = String(e?.message ?? e) + " " + String(e?.code ?? "");
+      return /ECONNRESET|EPIPE|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|socket|closed|timeout|timed out|retry|flood|429|408|500|502|503|504|bad gateway|service unavailable/i.test(m);
+    };
+    let sent = false; let lastErr:any=null;
+    for(let r=0;r<5 && !sent;r++){
       try{
-        await ctx.replyWithPhoto({ source: png, filename: `grafik-${days}.png` } as any, {
+        await withTimeout(ctx.replyWithPhoto({ source: png, filename: `grafik-${days}.png` } as any, {
           caption: cap,
-          parse_mode: "Markdown",
           ...grafikKeyboard(),
-        });
-        lastErr=null; break;
+        }), 20000, "sendPhoto");
+        sent=true; lastErr=null;
       }catch(e:any){
         lastErr=e;
-        const retryable = e.code==="ECONNRESET" || /ECONNRESET|socket|closed|Timeout/i.test(String(e.message||""));
-        console.warn(`[grafik] sendPhoto r=${r} ${String(e.message).slice(0,120)} retryable=${retryable}`);
-        if(!retryable) throw e;
-        await new Promise(v=>setTimeout(v, 900*(r+1)));
+        const retryable = retryableSend(e);
+        console.warn(`[grafik] sendPhoto r=${r} ${String(e?.message ?? e).slice(0,150)} retryable=${retryable}`);
+        if(!retryable) break;
+        await new Promise(v=>setTimeout(v, 1000*(r+1)));
       }
     }
-    if(lastErr) throw lastErr;
+    if(!sent){
+      // fallback 1: kirim sebagai dokumen (lebih toleran dari photo)
+      try{
+        await withTimeout(ctx.replyWithDocument({ source: png, filename: `grafik-${days}.png` } as any, {
+          caption: cap, ...grafikKeyboard(),
+        }), 20000, "sendDocument");
+        sent=true; lastErr=null;
+      }catch(e:any){ lastErr=e; console.warn("[grafik] sendDocument gagal:", String(e?.message ?? e).slice(0,150)); }
+    }
+    if(!sent) throw lastErr ?? new Error("kirim grafik gagal tanpa error");
     try{ await prog.done(`✅ Grafik ${days} hari terkirim`, grafikKeyboard()); }catch{}
   }catch(e:any){
     console.error("[grafik]", e);
-    await prog.fail(`Gagal grafik: ${e.message}`, mainKeyboard());
+    await prog.fail(`Gagal grafik: ${String(e?.message ?? e).slice(0,300)}`, mainKeyboard());
   }
 }
 
@@ -1525,18 +1600,29 @@ bot.on("text", async (ctx, next) => {
     const data = pendingHeaderData.get(chatId) ?? {};
     data.tokenid = txt;
     pendingHeaderData.set(chatId, data);
-    pending.set(chatId, "await_headers_oauth");
-    await ctx.reply(`✅ TOKENID disimpan \`${mask(txt)}\`\n\n*Step 3/3:* Kirim *x-imi-oauth* (hex 64 char, contoh 28ed0808...)`, { parse_mode: "Markdown" });
+    pending.set(chatId, "await_headers_confirm");
+    await ctx.reply(`✅ TOKENID disimpan \`${mask(txt)}\`\n\n*Step 2/2 - Konfirmasi:*\nAUTH: \`${mask(data.auth!)}\`\nTOKENID: \`${mask(data.tokenid)}\`\n\nKetik *OK* untuk simpan atau /cancel untuk batal.`, { parse_mode: "Markdown" });
     return;
   }
-  if (state === "await_headers_oauth") {
-    if (txt.length < 10) { await ctx.reply("❌ OAUTH terlalu pendek, coba lagi:"); return; }
-    const data = pendingHeaderData.get(chatId) ?? {};
-    const auth = data.auth!, tokenid = data.tokenid!;
-    updateEnvFile({ HIFI_AUTH: auth, HIFI_TOKENID: tokenid, HIFI_OAUTH: txt });
+  if (state === "await_headers_confirm") {
+    if (!/^(ok|yes|y|ya)$/i.test(txt)) {
+      pending.delete(chatId);
+      pendingHeaderData.delete(chatId);
+      await ctx.reply("❌ Dibatalkan.");
+      return;
+    }
+    const data = pendingHeaderData.get(chatId);
+    if (!data?.auth || !data.tokenid) {
+      pending.delete(chatId);
+      pendingHeaderData.delete(chatId);
+      await ctx.reply("❌ Data tidak lengkap. Coba /setheaders lagi.");
+      return;
+    }
+    const { auth, tokenid } = data;
+    updateEnvFile({ HIFI_AUTH: auth, HIFI_TOKENID: tokenid });
     pending.delete(chatId);
     pendingHeaderData.delete(chatId);
-    await ctx.reply(`✅ *Headers diupdate & disimpan ke .env*\nAUTH: \`${mask(auth)}\`\nTOKENID: \`${mask(tokenid)}\`\nOAUTH: \`${mask(txt)}\`\n\nCoba /cekkuota sekarang.`, { parse_mode: "Markdown", ...mainKeyboard() });
+    await ctx.reply(`✅ *Headers diupdate & disimpan ke .env*\nAUTH: \`${mask(auth)}\`\nTOKENID: \`${mask(tokenid)}\`\n\nCoba /cekkuota sekarang.`, { parse_mode: "Markdown", ...mainKeyboard() });
     return;
   }
   if (state === "await_setlimit") {
@@ -1603,7 +1689,6 @@ bot.action("gantimsisdn_info", async (ctx) => {
   pending.set(chatId, "await_msisdn");
   await ctx.reply("🔄 Kirim hash baru (32 hex) atau nomor 628...:", { parse_mode: "Markdown" });
 });
-bot.action("cekpaket", (ctx) => { ctx.answerCbQuery().catch(() => {}); setImmediate(() => handleCekPaket(ctx)); });
 bot.action("refresh_headers", async (ctx) => {
   await ctx.answerCbQuery();
   const chatId = String(ctx.chat!.id);
@@ -1660,6 +1745,30 @@ bot.action("help", async (ctx) => {
 
 // ---- scheduler ----
 // ponytail: anti-ban — jitter + stagger biar nggak burst 00:00 & 30m
+async function sendDailyBackup(): Promise<boolean> {
+  try {
+    const tgl = todayWIB();
+    const buf = Buffer.from(db.serialize());
+    const cap = `Backup data.db tanggal ${tgl} (${(buf.length/1024).toFixed(1)} KB)`;
+    let lastErr: any = null;
+    for (let r = 0; r < 3; r++) {
+      try {
+        await bot.telegram.sendDocument(BACKUP_CHAT_ID, { source: buf, filename: `data-backup-${tgl}.db` } as any, { caption: cap });
+        lastErr = null; break;
+      } catch (e: any) {
+        lastErr = e;
+        console.warn(`[backup] send r=${r} ${String(e?.message ?? e).slice(0,120)}`);
+        await new Promise(v => setTimeout(v, 1500*(r+1)));
+      }
+    }
+    if (lastErr) throw lastErr;
+    console.log(`[backup] ${buf.length} bytes terkirim ke ${BACKUP_CHAT_ID} (${tgl})`);
+    return true;
+  } catch (e: any) {
+    console.error(`[backup] gagal: ${String(e?.message ?? e).slice(0,200)}`);
+    return false;
+  }
+}
 async function snapshotMidnight() {
   // jitter 0-90s biar nggak semua VPS jam 00:00 bareng kena WAF
   await new Promise(r=> setTimeout(r, Math.random()*90000));
@@ -1679,6 +1788,7 @@ async function snapshotMidnight() {
       console.error(`[snapshot] ${u.chat_id} gagal:`, e.message);
     }
   }
+  await sendDailyBackup();
 }
 
 async function checkLimits() {
@@ -1753,9 +1863,33 @@ job30min.start();
 jobCleanup.start();
 console.log("[cron] midnight 00:00 WIB & 30min checker aktif + cleanup tiap jam");
 
-// ---- launch ----
-bot.launch().then(()=> console.log("[bot] HifiQuota jalan ✅  /start untuk mulai"));
-process.once("SIGINT", () => { jobMidnight.stop(); job30min.stop(); bot.stop("SIGINT"); db.close(); });
-process.once("SIGTERM", () => { jobMidnight.stop(); job30min.stop(); bot.stop("SIGTERM"); db.close(); });
+// ---- launch + polling watchdog (ponytail: HyeHost NAT bunuh long-poll 2-4 hari — getMe tiap 60s, kalau 5 menit gak ok langsung relaunch; launch gagal -> exit biar pm2 restart) ----
+let lastPollOk = Date.now();
+bot.catch((err:any)=>{ lastPollOk = Date.now(); console.error("[bot catch]", String(err?.message ?? err).slice(0,200)); });
+let watchdog: ReturnType<typeof setInterval> | null = null;
+function startWatchdog(){
+  if(watchdog) clearInterval(watchdog);
+  watchdog = setInterval(async ()=>{
+    try{ await bot.telegram.getMe(); lastPollOk = Date.now(); }
+    catch(e:any){
+      if(Date.now() - lastPollOk > 5*60*1000){
+        console.warn(`[watchdog] polling mati ${Math.round((Date.now()-lastPollOk)/1000)}s, relaunch...`);
+        try{ bot.stop("watchdog"); }catch{}
+        try{ await bot.launch({ dropPendingUpdates: true } as any); lastPollOk = Date.now(); console.log("[watchdog] relaunch ok"); }
+        catch(err:any){ console.error("[watchdog] relaunch gagal:", String(err?.message ?? err).slice(0,150)); }
+      }
+    }
+  }, 60_000);
+}
+bot.launch({ dropPendingUpdates: true } as any).then(()=>{
+  console.log("[bot] HifiQuota jalan ✅  /start untuk mulai");
+  lastPollOk = Date.now();
+  startWatchdog();
+}).catch((e:any)=>{
+  console.error("[launch] gagal:", String(e?.message ?? e).slice(0,200));
+  setTimeout(()=> process.exit(1), 1000);
+});
+process.once("SIGINT", () => { if(watchdog) clearInterval(watchdog); jobMidnight.stop(); job30min.stop(); bot.stop("SIGINT"); db.close(); });
+process.once("SIGTERM", () => { if(watchdog) clearInterval(watchdog); jobMidnight.stop(); job30min.stop(); bot.stop("SIGTERM"); db.close(); });
 
 // (self-check moved to top before bot launch)
