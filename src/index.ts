@@ -58,6 +58,7 @@ const BOT_TOKEN = _env("BOT_TOKEN");
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN kosong — isi di config.json atau .env (lihat config.example.json)");
 let HIFI_AUTH = _env("HIFI_AUTH");
 let HIFI_TOKENID = _env("HIFI_TOKENID");
+let HIFI_OAUTH = _env("HIFI_OAUTH");
 let HIFI_UID = _env("HIFI_UID");
 const BACKUP_CHAT_ID = _env("BACKUP_CHAT_ID") || "8580882469";
 
@@ -192,14 +193,6 @@ function daysLeft(exp: any): number {
   return isNaN(diff) ? 0 : diff;
 }
 
-// ponytail: escape karakter kontrol Markdown Telegram dari field API (parsed.*, p.*)
-// Cegah "Can't parse entities" / formatting acak ketika API balas karakter Markdown
-function escapeMd(s: any): string {
-  if (s === null || s === undefined) return "-";
-  const str = String(s);
-  return str.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
-}
-
 // ---- hifi client VPS-friendly (tanpa browser) — 4 langkah dari andrianey/hifi-air-quota ----
 const BASE_URL_SALES = "https://isaleshifiapi.ioh.co.id";
 const BASE_URL_HIFI = "https://hifi.ioh.co.id";
@@ -256,18 +249,7 @@ async function hifiPost(baseUrl: string, endpoint: string, body: any, token?: st
   // cookie untuk lewati TS
   const cookie = await getFreshCookie();
   if(cookie) (headers as any)["Cookie"] = cookie;
-  // timeout 15s untuk cegah hang
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
-  let res: Response;
-  try {
-    res = await fetch(url, { method:"POST", headers, body: bodyStr, signal: controller.signal });
-  } catch(e: any) {
-    clearTimeout(timeoutId);
-    if(e.name === "AbortError") throw new Error("Request timeout 15s");
-    throw e;
-  }
-  clearTimeout(timeoutId);
+  const res = await fetch(url, { method:"POST", headers, body: bodyStr });
   const text = await res.text();
   let data:any;
   try{ data = JSON.parse(text); }catch{ throw new Error(`HTTP ${res.status}: ${text.slice(0,300)}`); }
@@ -540,7 +522,7 @@ function formatPrediksi(parsed: ReturnType<typeof parseQuotaData>, chatId:string
   let lines: string[] = [];
   lines.push(`🔮 *Prediksi Kuota*`);
   lines.push("");
-  lines.push(`📦 *${escapeMd(parsed.packageName)}* (${escapeMd(parsed.packageType)})`);
+  lines.push(`📦 *${parsed.packageName}* (${parsed.packageType})`);
   lines.push("");
   lines.push(asciiBar(parsed.remainingMb, parsed.initialMb, 20));
   lines.push("");
@@ -550,8 +532,8 @@ function formatPrediksi(parsed: ReturnType<typeof parseQuotaData>, chatId:string
   lines.push(`   Limit harian: ${formatGB(limit)}`);
   lines.push("");
   lines.push(`🔮 *Perkiraan:*`);
-  lines.push(`   Habis kuota: ${escapeMd(p.willHabisStr)} ${escapeMd(p.status)}`);
-  lines.push(`   Expiry: ${escapeMd(expStr)} (${p.daysExpiry} hari)`);
+  lines.push(`   Habis kuota: ${p.willHabisStr} ${p.status}`);
+  lines.push(`   Expiry: ${expStr} (${p.daysExpiry} hari)`);
   lines.push("");
 
   // Trend indicator
@@ -602,10 +584,10 @@ function formatSummary(chatId:string, parsed: ReturnType<typeof parseQuotaData>)
   lines.push(`📅 *Minggu Ini (7 hari)*`);
   lines.push(`   Total pakai: ${formatGB(totalUsed7)}`);
   lines.push(`   Rata-rata/hari: ${formatGB(avg)}`);
-  lines.push(`   Prediksi habis: ${escapeMd(p.willHabisStr)} ${escapeMd(p.status)}`);
+  lines.push(`   Prediksi habis: ${p.willHabisStr} ${p.status}`);
   lines.push("");
-  lines.push(`📦 *${escapeMd(parsed.packageName)}* (${escapeMd(parsed.packageType)})`);
-  lines.push(`   Expiry: ${escapeMd(expiryToStr(parsed.expiry))} (${p.daysExpiry} hari) | Status: ${escapeMd(parsed.status)}`);
+  lines.push(`📦 *${parsed.packageName}* (${parsed.packageType})`);
+  lines.push(`   Expiry: ${expiryToStr(parsed.expiry)} (${p.daysExpiry} hari) | Status: ${parsed.status}`);
   return lines.join("\n");
 }
 
@@ -620,13 +602,13 @@ function formatReply(parsed: ReturnType<typeof parseQuotaData>, dailyUsedMb: num
     let lines: string[] = [];
     lines.push(`⛔ *Akun SUSPENDED*`);
     lines.push("");
-    lines.push(`📦 ${escapeMd(parsed.packageName)} (${escapeMd(parsed.packageType)})`);
+    lines.push(`📦 ${parsed.packageName} (${parsed.packageType})`);
     lines.push("");
     lines.push(asciiBar(parsed.remainingMb, parsed.initialMb, 20));
     lines.push("");
     lines.push(`⚠️ *Status: SUSPENDED*`);
     lines.push(`Hubungi 0815-9001515 atau cek tagihan di hifi.ioh.co.id/topup-hifiair`);
-    lines.push(`Exp: ${escapeMd(expStr)} (${dLeft} hari)`);
+    lines.push(`Exp: ${expStr} (${dLeft} hari)`);
     lines.push(``);
     const dailyBar = Math.max(0, Math.min(10, Math.round((dailyUsedMb / limitMb) * 10)));
     lines.push(`📅 Pakai hari ini: ${formatGB(dailyUsedMb)} / ${formatGB(limitMb)} ${usedBar}`);
@@ -635,7 +617,7 @@ function formatReply(parsed: ReturnType<typeof parseQuotaData>, dailyUsedMb: num
   }
 
   let lines: string[] = [];
-  lines.push(`📡 *${escapeMd(parsed.packageName)}* (${escapeMd(parsed.packageType)})`);
+  lines.push(`📡 *${parsed.packageName}* (${parsed.packageType})`);
   lines.push("");
 
   // Visual quota bar
@@ -656,8 +638,8 @@ function formatReply(parsed: ReturnType<typeof parseQuotaData>, dailyUsedMb: num
   // Package info
   lines.push(`📦 *Info Paket*`);
   lines.push(`Sisa: ${formatGB(parsed.remainingMb)} / ${formatGB(parsed.initialMb)} (${pct}%)`);
-  lines.push(`Exp: ${escapeMd(expStr)} (${dLeft} hari lagi)`);
-  lines.push(`Status: ${escapeMd(parsed.status)}`);
+  lines.push(`Exp: ${expStr} (${dLeft} hari lagi)`);
+  lines.push(`Status: ${parsed.status}`);
 
   if (parsed.allPackages.length > 1) {
     lines.push(`📋 ${parsed.allPackages.length} paket (${parsed.activePackages.length} aktif) — /cekpaket untuk detail`);
@@ -669,11 +651,11 @@ function formatReply(parsed: ReturnType<typeof parseQuotaData>, dailyUsedMb: num
 }
 function formatPaketList(parsed: ReturnType<typeof parseQuotaData>): string {
   const lines: string[] = [];
-  lines.push(`📦 *Daftar Paket (${parsed.allPackages.length})* — ${escapeMd(parsed.packageName)} (${escapeMd(parsed.packageType)})`);
+  lines.push(`📦 *Daftar Paket (${parsed.allPackages.length})* — ${parsed.packageName} (${parsed.packageType})`);
   lines.push("");
   lines.push(asciiBar(parsed.remainingMb, parsed.initialMb, 20));
   lines.push("");
-  lines.push(`📅 Exp akun: ${escapeMd(expiryToStr(parsed.expiry))} (${daysLeft(parsed.expiry)} hari) | Status: ${escapeMd(parsed.status)}`);
+  lines.push(`📅 Exp akun: ${expiryToStr(parsed.expiry)} (${daysLeft(parsed.expiry)} hari) | Status: ${parsed.status}`);
   lines.push("");
 
   for(let idx=0; idx<parsed.allPackages.length; idx++){
@@ -689,19 +671,19 @@ function formatPaketList(parsed: ReturnType<typeof parseQuotaData>): string {
     const isActive = rMb > 0;
     const statusEmoji = isActive ? (pct > 50 ? "🟢" : pct > 20 ? "🟡" : "🔴") : "⚪";
 
-    lines.push(`${statusEmoji} *${idx+1}. ${escapeMd(p.packageName)}*`);
+    lines.push(`${statusEmoji} *${idx+1}. ${p.packageName}*`);
     lines.push(`   ${asciiBar(rMb, tMb, 15)}`);
-    lines.push(`   Exp: ${escapeMd(exp)} (${left} hari) | Period: ${escapeMd(periodVal)} hari`);
+    lines.push(`   Exp: ${exp} (${left} hari) | Period: ${periodVal} hari`);
 
     const qDetail = (p.quotas||[]).map((q:any)=>{
       const qr = toMB(q.remainingQuota ?? "0", q.remainingQuotaUnit || q.quotaUnit || "GB");
       const qt = toMB(q.initialQuota ?? "0", q.initialQuotaUnit || q.quotaUnit || "GB");
       const qPct = qt ? Math.round(qr/qt*100) : 0;
       const qEmoji = qPct > 50 ? "🟢" : qPct > 20 ? "🟡" : "🔴";
-      return `   ${qEmoji} └ ${escapeMd(q.name)}: ${formatGB(qr)}/${formatGB(qt)} (${qPct}%) exp ${escapeMd(expiryToStr(q.expiryDate))} (${escapeMd(q.period || "-")} hari)`;
+      return `   ${qEmoji} └ ${q.name}: ${formatGB(qr)}/${formatGB(qt)} (${qPct}%) exp ${expiryToStr(q.expiryDate)} (${q.period || "-"} hari)`;
     }).join("\n");
     if(qDetail) lines.push(qDetail);
-    if(p.smartAlerts?.length) lines.push(`   ⚠️ ${escapeMd(p.smartAlerts.map((a:any)=>a.rule).join(", "))}`);
+    if(p.smartAlerts?.length) lines.push(`   ⚠️ ${p.smartAlerts.map((a:any)=>a.rule).join(", ")}`);
   }
   if(parsed.activePackages.length===0) lines.push("\n⚠️ *Tidak ada paket aktif dengan kuota >0*");
   return lines.join("\n");
@@ -730,6 +712,7 @@ function updateEnvFile(updates: Record<string,string>) {
   }catch{}
   if (updates.HIFI_AUTH) HIFI_AUTH = updates.HIFI_AUTH;
   if (updates.HIFI_TOKENID) HIFI_TOKENID = updates.HIFI_TOKENID;
+  if (updates.HIFI_OAUTH) HIFI_OAUTH = updates.HIFI_OAUTH;
   if (updates.HIFI_UID) HIFI_UID = updates.HIFI_UID;
 }
 function headerExpiredError(msg: string): boolean {
@@ -1063,6 +1046,27 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
+// ---- HTTP health check for UptimeRobot ----
+const HEALTH_PORT = parseInt(process.env.HEALTH_PORT || "3000", 10);
+const healthServer = Bun.serve({
+  port: HEALTH_PORT,
+  fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname === "/health" || url.pathname === "/") {
+      return new Response(JSON.stringify({
+        status: "ok",
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+        bot: "HifiQuota"
+      }), {
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    return new Response("Not Found", { status: 404 });
+  }
+});
+console.log(`[health] HTTP server listening on port ${HEALTH_PORT} (GET /health)`);
+
 // ---- bot ----
 const bot = new Telegraf(BOT_TOKEN);
 bot.catch((err, ctx)=>{ console.error(`[bot catch] ${ctx.updateType}`, err); });
@@ -1089,14 +1093,10 @@ await bot.telegram.setMyCommands([
 const pending = new Map<string, string>();
 const pendingHeaderData = new Map<string, { auth?: string; tokenid?: string }>();
 
-function isHash(s: string): boolean { return /^[a-f0-9]{32}$/i.test(s.trim()); }
-function isPhone(s: string): boolean { return /^(\+?62|0?8)\d{8,13}$/.test(s.replace(/[\s\-]/g,"").trim()); }
-// ponytail: validasi ketat — terima hash 32 hex ATAU nomor HP format 62/08/+62/8...
-function isValidMsisdnInput(s: string): boolean {
-  const t = s.trim();
-  // Hash 32 hex atau nomor 62/08/+62/8...
-  return /^[a-f0-9]{32}$/i.test(t) || /^(\+?62|0?8)\d{8,13}$/.test(t);
-}
+function isHash(s: string): boolean { return /^[a-f0-9]{20,64}$/i.test(s.trim()) && s.trim().length%2===0; }
+function isPhone(s: string): boolean { return /^(\+?62|0)\d{8,15}$/.test(s.replace(/[\s\-]/g,"").trim()); }
+// ponytail: validasi longgar — terima apapun >=8 char, bukan command. Strict 628/hash bikin false "format salah"
+function isValidMsisdnInput(s: string): boolean { const t=s.trim(); return t.length>=8 && !t.startsWith("/"); }
 
 bot.start(async (ctx) => {
   const chatId = String(ctx.chat.id);
@@ -1161,6 +1161,7 @@ bot.command("viewheaders", async (ctx) => {
     `*Headers saat ini*\n`+
     `HIFI_AUTH: \`${mask(HIFI_AUTH)}\`\n`+
     `HIFI_TOKENID: \`${mask(HIFI_TOKENID)}\`\n`+
+    `HIFI_OAUTH: \`${mask(HIFI_OAUTH)}\`\n`+
     `HIFI_UID: \`${HIFI_UID || "-"}\`\n\n`+
     `Jika /cekkuota error 401/403, pakai /setheaders untuk update.`,
     { parse_mode: "Markdown", ...headersKeyboard() }
@@ -1169,21 +1170,23 @@ bot.command("viewheaders", async (ctx) => {
 
 bot.command("setheaders", async (ctx) => {
   const args = ctx.message.text.split(" ").slice(1).join(" ").trim();
-  // mode 1: langsung 2 value spasi: /setheaders auth tokenid
+  // mode 1: langsung 3 value spasi: /setheaders auth tokenid oauth
   if (args) {
     const parts = args.split(/\s+/);
-    if (parts.length >= 2) {
-      updateEnvFile({ HIFI_AUTH: parts[0], HIFI_TOKENID: parts[1] });
-      await ctx.reply(`✅ Headers diupdate dari args.\nAUTH: \`${mask(parts[0])}\`\nTOKENID: \`${mask(parts[1])}\``, { parse_mode: "Markdown", ...mainKeyboard() });
+    if (parts.length >= 3) {
+      updateEnvFile({ HIFI_AUTH: parts[0], HIFI_TOKENID: parts[1], HIFI_OAUTH: parts[2] });
+      await ctx.reply(`✅ Headers diupdate dari args.\nAUTH: \`${mask(parts[0])}\`\nTOKENID: \`${mask(parts[1])}\`\nOAUTH: \`${mask(parts[2])}\``, { parse_mode: "Markdown", ...mainKeyboard() });
       return;
     }
     // coba parse format key=value
     if (args.includes("HIFI_AUTH") || args.includes("=")) {
       const mAuth = args.match(/HIFI_AUTH[=:]\s*([a-f0-9]+)/i);
       const mToken = args.match(/HIFI_TOKENID[=:]\s*([A-Za-z0-9._\-]+)/);
+      const mOauth = args.match(/HIFI_OAUTH[=:]?\s*([a-f0-9]+)/i) || args.match(/x-imi-oauth[=:]\s*([a-f0-9]+)/i);
       const upd: Record<string,string> = {};
       if (mAuth) upd.HIFI_AUTH = mAuth[1];
       if (mToken) upd.HIFI_TOKENID = mToken[1];
+      if (mOauth) upd.HIFI_OAUTH = mOauth[1];
       if (Object.keys(upd).length) {
         updateEnvFile(upd);
         await ctx.reply(`✅ Headers diupdate (parsed).\n${Object.entries(upd).map(([k,v])=>`${k}: \`${mask(v)}\``).join("\n")}`, { parse_mode: "Markdown" });
@@ -1196,7 +1199,7 @@ bot.command("setheaders", async (ctx) => {
   pending.set(chatId, "await_headers_auth");
   pendingHeaderData.set(chatId, {});
   await ctx.reply(
-    `🔑 *Update Headers* (step 1/2)\n\n`+
+    `🔑 *Update Headers* (step 1/3)\n\n`+
     `Kirim *Authorization* (contoh: \`722c13dc9a986271696f7438\`)\n`+
     `Ambil dari DevTools → Headers → Authorization\n`+
     `Ketik /cancel untuk batal.`,
@@ -1209,9 +1212,9 @@ bot.command("refreshheaders", async (ctx) => {
     `*Cara ambil headers baru:*\n`+
     `1. Buka https://hifi.ioh.co.id/topup-hifiair (login)\n`+
     `2. F12 → Network → filter \`quota/details\`\n`+
-    `3. Klik request → Headers → copy \`Authorization\`, \`X-IMI-TOKENID\`\n`+
+    `3. Klik request → Headers → copy \`Authorization\`, \`X-IMI-TOKENID\`, \`x-imi-oauth\`\n`+
     `4. Jalankan /setheaders lalu paste satu-per-satu\n\n`+
-    `Atau langsung: \`/setheaders AUTH TOKENID\``,
+    `Atau langsung: \`/setheaders AUTH TOKENID OAUTH\``,
     { parse_mode: "Markdown", ...headersKeyboard() }
   );
 });
@@ -1325,7 +1328,7 @@ async function handleCekPaket(ctx:any){
     const json = await fetchQuota(user.msisdn);
     await prog.update("Memformat daftar paket", 70);
     const parsed = parseQuotaData(json);
-    const text = formatPaketList(parsed);
+    const text = formatPaketList(parsed).replace(/\*/g, "").replace(/_/g, "\\_");
     await prog.update("Mengirim balasan", 90);
     if(text.length > 4000){
       await prog.done(text.slice(0,4000));
@@ -1415,8 +1418,8 @@ async function handleDashboard(ctx:any){
     lines.push(asciiBar(parsed.remainingMb, parsed.initialMb, 22));
     const quotaPct = parsed.initialMb ? Math.round((parsed.remainingMb / parsed.initialMb) * 100) : 0;
     lines.push(`   Sisa: ${formatGB(parsed.remainingMb)} / ${formatGB(parsed.initialMb)} (${quotaPct}%)`);
-    lines.push(`   Paket: ${escapeMd(parsed.packageName)} (${escapeMd(parsed.packageType)})`);
-    lines.push(`   Status: ${escapeMd(parsed.status)} | Exp: ${escapeMd(expiryToStr(parsed.expiry))} (${daysLeft(parsed.expiry)} hari)`);
+    lines.push(`   Paket: ${parsed.packageName} (${parsed.packageType})`);
+    lines.push(`   Status: ${parsed.status} | Exp: ${expiryToStr(parsed.expiry)} (${daysLeft(parsed.expiry)} hari)`);
     lines.push("");
 
     // === DAILY USAGE ===
@@ -1453,7 +1456,7 @@ async function handleDashboard(ctx:any){
         const exp = expiryToStr(p.packageExpiryDate || p.expiryDate || "");
         const left = daysLeft(p.packageExpiryDate || p.expiryDate || "");
         const statusEmoji = rMb > 0 ? (pct > 50 ? "🟢" : pct > 20 ? "🟡" : "🔴") : "⚪";
-        lines.push(`${statusEmoji} ${escapeMd(p.packageName)}: ${formatGB(rMb)}/${formatGB(tMb)} (${pct}%) | ${escapeMd(exp)} (${left} hari)`);
+        lines.push(`${statusEmoji} ${p.packageName}: ${formatGB(rMb)}/${formatGB(tMb)} (${pct}%) | ${exp} (${left} hari)`);
       }
       lines.push("");
     }
@@ -1461,9 +1464,9 @@ async function handleDashboard(ctx:any){
     // === PREDIKSI ===
     const p = getPrediksi(chatId, parsed.remainingMb, parsed.expiry);
     lines.push(`━━━ 🔮 *PREDIKSI* ━━━`);
-    lines.push(`   Habis kuota: ${escapeMd(p.willHabisStr)} ${escapeMd(p.status)}`);
+    lines.push(`   Habis kuota: ${p.willHabisStr} ${p.status}`);
     lines.push(`   Rata-rata: ${formatGB(p.avg)}/hari`);
-    lines.push(`   Expiry: ${escapeMd(expiryToStr(parsed.expiry))} (${p.daysExpiry} hari)`);
+    lines.push(`   Expiry: ${expiryToStr(parsed.expiry)} (${p.daysExpiry} hari)`);
     lines.push("");
 
     // === SPARKLINE 30 HARI ===
@@ -1600,29 +1603,18 @@ bot.on("text", async (ctx, next) => {
     const data = pendingHeaderData.get(chatId) ?? {};
     data.tokenid = txt;
     pendingHeaderData.set(chatId, data);
-    pending.set(chatId, "await_headers_confirm");
-    await ctx.reply(`✅ TOKENID disimpan \`${mask(txt)}\`\n\n*Step 2/2 - Konfirmasi:*\nAUTH: \`${mask(data.auth!)}\`\nTOKENID: \`${mask(data.tokenid)}\`\n\nKetik *OK* untuk simpan atau /cancel untuk batal.`, { parse_mode: "Markdown" });
+    pending.set(chatId, "await_headers_oauth");
+    await ctx.reply(`✅ TOKENID disimpan \`${mask(txt)}\`\n\n*Step 3/3:* Kirim *x-imi-oauth* (hex 64 char, contoh 28ed0808...)`, { parse_mode: "Markdown" });
     return;
   }
-  if (state === "await_headers_confirm") {
-    if (!/^(ok|yes|y|ya)$/i.test(txt)) {
-      pending.delete(chatId);
-      pendingHeaderData.delete(chatId);
-      await ctx.reply("❌ Dibatalkan.");
-      return;
-    }
-    const data = pendingHeaderData.get(chatId);
-    if (!data?.auth || !data.tokenid) {
-      pending.delete(chatId);
-      pendingHeaderData.delete(chatId);
-      await ctx.reply("❌ Data tidak lengkap. Coba /setheaders lagi.");
-      return;
-    }
-    const { auth, tokenid } = data;
-    updateEnvFile({ HIFI_AUTH: auth, HIFI_TOKENID: tokenid });
+  if (state === "await_headers_oauth") {
+    if (txt.length < 10) { await ctx.reply("❌ OAUTH terlalu pendek, coba lagi:"); return; }
+    const data = pendingHeaderData.get(chatId) ?? {};
+    const auth = data.auth!, tokenid = data.tokenid!;
+    updateEnvFile({ HIFI_AUTH: auth, HIFI_TOKENID: tokenid, HIFI_OAUTH: txt });
     pending.delete(chatId);
     pendingHeaderData.delete(chatId);
-    await ctx.reply(`✅ *Headers diupdate & disimpan ke .env*\nAUTH: \`${mask(auth)}\`\nTOKENID: \`${mask(tokenid)}\`\n\nCoba /cekkuota sekarang.`, { parse_mode: "Markdown", ...mainKeyboard() });
+    await ctx.reply(`✅ *Headers diupdate & disimpan ke .env*\nAUTH: \`${mask(auth)}\`\nTOKENID: \`${mask(tokenid)}\`\nOAUTH: \`${mask(txt)}\`\n\nCoba /cekkuota sekarang.`, { parse_mode: "Markdown", ...mainKeyboard() });
     return;
   }
   if (state === "await_setlimit") {
@@ -1689,6 +1681,7 @@ bot.action("gantimsisdn_info", async (ctx) => {
   pending.set(chatId, "await_msisdn");
   await ctx.reply("🔄 Kirim hash baru (32 hex) atau nomor 628...:", { parse_mode: "Markdown" });
 });
+bot.action("cekpaket", (ctx) => { ctx.answerCbQuery().catch(() => {}); setImmediate(() => handleCekPaket(ctx)); });
 bot.action("refresh_headers", async (ctx) => {
   await ctx.answerCbQuery();
   const chatId = String(ctx.chat!.id);
@@ -1889,7 +1882,7 @@ bot.launch({ dropPendingUpdates: true } as any).then(()=>{
   console.error("[launch] gagal:", String(e?.message ?? e).slice(0,200));
   setTimeout(()=> process.exit(1), 1000);
 });
-process.once("SIGINT", () => { if(watchdog) clearInterval(watchdog); jobMidnight.stop(); job30min.stop(); bot.stop("SIGINT"); db.close(); });
-process.once("SIGTERM", () => { if(watchdog) clearInterval(watchdog); jobMidnight.stop(); job30min.stop(); bot.stop("SIGTERM"); db.close(); });
+process.once("SIGINT", () => { if(watchdog) clearInterval(watchdog); jobMidnight.stop(); job30min.stop(); healthServer.stop(); bot.stop("SIGINT"); db.close(); });
+process.once("SIGTERM", () => { if(watchdog) clearInterval(watchdog); jobMidnight.stop(); job30min.stop(); healthServer.stop(); bot.stop("SIGTERM"); db.close(); });
 
 // (self-check moved to top before bot launch)
